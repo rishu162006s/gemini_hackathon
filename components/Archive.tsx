@@ -52,7 +52,7 @@ const HistoryVault: React.FC<Props> = ({ reports, appointments, consultations, w
         <TabBtn active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} icon={<FileText size={16} />} label="Reports" />
         <TabBtn active={activeTab === 'appointments'} onClick={() => setActiveTab('appointments')} icon={<Calendar size={16} />} label="Visits" />
         <TabBtn active={activeTab === 'consults'} onClick={() => setActiveTab('consults')} icon={<Stethoscope size={16} />} label="Consults" />
-        <TabBtn active={activeTab === 'wellness'} onClick={() => setActiveTab('wellness'} icon={<Brain size={16} />} label="Wellness" />
+        <TabBtn active={activeTab === 'wellness'} onClick={() => setActiveTab('wellness')} icon={<Brain size={16} />} label="Wellness" />
       </div>
 
       <div className="space-y-3 animate-in fade-in slide-in-from-bottom-4 duration-500">
