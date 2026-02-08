@@ -3,15 +3,18 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { UserProfile, DailyLog, HealthReport, MonthlyPlan, Medicine } from "../types";
 
 // Safety polyfill for browser environments lacking Node.js process globals
-if (typeof (window as any).process === 'undefined') {
-  (window as any).process = { env: {} };
-}
+
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms + Math.random() * 1000));
 
 const getAI = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) throw new Error("API_KEY_MISSING");
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
+  if (!apiKey) {
+    console.error("Missing VITE_GEMINI_API_KEY");
+    throw new Error("API_KEY_MISSING");
+  }
+
   return new GoogleGenAI({ apiKey });
 };
 
