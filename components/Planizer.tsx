@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Sparkles, Calendar, Utensils, Ban, AlertCircle, CheckCircle, Loader2, ClipboardList, ShieldCheck, HeartPulse, ChevronRight, AlertTriangle, Info, Zap } from 'lucide-react';
 import { UserProfile, HealthReport, DailyLog, MonthlyPlan } from '../types';
@@ -13,7 +12,13 @@ interface Props {
 const Planizer: React.FC<Props> = ({ user, reports, logs }) => {
   const [plan, setPlan] = useState<MonthlyPlan | null>(() => {
     const saved = localStorage.getItem('medi_current_plan');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.title && parsed.dietStrategy) return parsed;
+      }
+    } catch(e) {}
+    return null;
   });
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -25,11 +30,15 @@ const Planizer: React.FC<Props> = ({ user, reports, logs }) => {
     setIsGenerating(true);
     try {
       const newPlan = await generateMonthlyPlan(reports, logs, user);
-      setPlan(newPlan);
-      localStorage.setItem('medi_current_plan', JSON.stringify(newPlan));
+      if (newPlan && newPlan.title) {
+        setPlan(newPlan);
+        localStorage.setItem('medi_current_plan', JSON.stringify(newPlan));
+      } else {
+        throw new Error("Empty plan generated");
+      }
     } catch (err) {
       console.error(err);
-      alert("Plan generation failed. Please try again.");
+      alert("Plan generation failed. Please ensure you have clinical data logged.");
     } finally {
       setIsGenerating(false);
     }
@@ -128,7 +137,7 @@ const Planizer: React.FC<Props> = ({ user, reports, logs }) => {
                   onClick={handleGeneratePlan}
                   className="px-8 py-4 bg-white/10 hover:bg-white/20 rounded-2xl border border-white/20 transition-all font-black uppercase text-[10px] tracking-widest flex items-center gap-3"
                  >
-                   <Sparkles size={16} /> Regulate Plan
+                   <Sparkles size={16} /> Re-Generate Plan
                  </button>
               </div>
            </div>

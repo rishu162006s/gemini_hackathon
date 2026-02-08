@@ -2,6 +2,11 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { UserProfile, DailyLog, HealthReport, MonthlyPlan, Medicine } from "../types";
 
+// Safety polyfill for browser environments lacking Node.js process globals
+if (typeof (window as any).process === 'undefined') {
+  (window as any).process = { env: {} };
+}
+
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms + Math.random() * 1000));
 
 const getAI = () => {
@@ -33,7 +38,7 @@ export const downloadAsFile = (filename: string, text: string) => {
   document.body.removeChild(a);
 };
 
-const handleApiCall = async <T>(call: () => Promise<T>, retries = 3): Promise<T> => {
+const handleApiCall = async <T>(call: () => Promise<T>, retries = 2): Promise<T> => {
   try {
     return await call();
   } catch (error: any) {
@@ -41,9 +46,11 @@ const handleApiCall = async <T>(call: () => Promise<T>, retries = 3): Promise<T>
     console.error("Gemini API Error:", errorString);
 
     const isQuotaError = errorString.includes("429") || errorString.includes("quota") || errorString.includes("RESOURCE_EXHAUSTED");
+    const isAuthError = errorString.includes("API_KEY_MISSING") || errorString.includes("403") || errorString.includes("key not valid");
 
+    if (isAuthError) throw new Error("AUTHENTICATION_FAILED");
     if (isQuotaError && retries > 0) {
-      await sleep((4 - retries) * 6000);
+      await sleep(3000);
       return handleApiCall(call, retries - 1);
     }
     if (isQuotaError) throw new Error("QUOTA_EXCEEDED");
@@ -59,20 +66,37 @@ export const stopAllAudio = () => {
   if (currentAudioContext) { try { currentAudioContext.close(); } catch (e) {} currentAudioContext = null; }
 };
 
-const CLINICAL_SYSTEM_INSTRUCTION = "You are Dr. Rishu, a world-class Chief Medical Consultant at MediZen. You are authoritative, highly experienced, and professional. Your clinical reasoning follows the SOAP (Subjective, Objective, Assessment, Plan) methodology. For structured requests, adhere strictly to the provided JSON schema without preamble.";
-
-const UNIX_SYSTEM_INSTRUCTION = "You are the MediZen Intelligence Assistant (MZ-1). Your primary directive is to provide technical and operational support for the MediZen application. \n\nRULES:\n1. Be extremely formal and professional in tone.\n2. Responses MUST be concise, strictly between 5 to 8 lines in length.\n3. ONLY answer questions related to MediZen, its features (Dashboard, Persona, Clinic, Pharmacy, Archive), and navigation.\n4. If asked about unrelated topics, politely state that you are only authorized to discuss MediZen operations.\n5. Do not provide medical advice; direct users to Dr. Rishu in the Clinic section.";
+const CLINICAL_SYSTEM_INSTRUCTION = "You are Dr. Rishu, a world-class Chief Medical Consultant at MediZen. You are authoritative, highly experienced, and professional. Your clinical reasoning follows the SOAP methodology. For structured requests, adhere strictly to the JSON schema provided.";
 
 const DiagnosisSchema = {
   type: Type.OBJECT,
   properties: {
-    summary: { type: Type.STRING, description: "A high-level professional summary of the patient's condition." },
-    recommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Specific medical lifestyle changes." },
-    medications: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Specific drug molecules or products required." },
-    specialty: { type: Type.STRING, description: "The medical department appropriate for this case." },
-    fullSpeechText: { type: Type.STRING, description: "A detailed professional script for Dr. Rishu to explain the findings." }
+    summary: { type: Type.STRING, description: "Professional summary of the condition." },
+    recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+    medications: { type: Type.ARRAY, items: { type: Type.STRING } },
+    specialty: { type: Type.STRING },
+    fullSpeechText: { type: Type.STRING }
   },
   required: ["summary", "recommendations", "medications", "specialty", "fullSpeechText"]
+};
+
+const WellnessSchema = {
+  type: Type.OBJECT,
+  properties: {
+    summary: { type: Type.STRING },
+    category: { type: Type.STRING, enum: ["Normal", "Medium Risk", "Emergency"] },
+    findings: {
+      type: Type.OBJECT,
+      properties: {
+        depression: { type: Type.STRING },
+        anxiety: { type: Type.STRING },
+        ptsd: { type: Type.STRING }
+      },
+      required: ["depression", "anxiety", "ptsd"]
+    },
+    recommendations: { type: Type.ARRAY, items: { type: Type.STRING } }
+  },
+  required: ["summary", "category", "findings", "recommendations"]
 };
 
 const MonthlyPlanSchema = {
@@ -93,60 +117,83 @@ const MonthlyPlanSchema = {
         required: ["phase", "days", "focus", "activities"]
       }
     },
-    doList: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Daily habits to maintain." },
-    dontList: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Strictly prohibited activities or foods." },
-    precautions: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Red flag symptoms to watch out for." }
+    doList: { type: Type.ARRAY, items: { type: Type.STRING } },
+    dontList: { type: Type.ARRAY, items: { type: Type.STRING } },
+    precautions: { type: Type.ARRAY, items: { type: Type.STRING } }
   },
   required: ["title", "dietStrategy", "phases", "doList", "dontList", "precautions"]
 };
 
-const WellnessAnalysisSchema = {
+// Fix: Add schemas for Medicine objects to ensure structured identification and extraction
+const MedicineSchema = {
   type: Type.OBJECT,
   properties: {
-    summary: { type: Type.STRING, description: "Detailed clinical summary of neuro-wellness status." },
-    category: { type: Type.STRING, enum: ["Normal", "Medium Risk", "Emergency"] },
-    findings: {
-      type: Type.OBJECT,
-      properties: {
-        depression: { type: Type.STRING, description: "Assessment of serotonin/depression markers." },
-        anxiety: { type: Type.STRING, description: "Assessment of cortisol/anxiety markers." },
-        ptsd: { type: Type.STRING, description: "Assessment of amygdala/PTSD markers." }
-      },
-      required: ["depression", "anxiety", "ptsd"]
-    },
-    recommendations: { type: Type.ARRAY, items: { type: Type.STRING } }
+    id: { type: Type.STRING },
+    name: { type: Type.STRING },
+    type: { type: Type.STRING },
+    uses: { type: Type.ARRAY, items: { type: Type.STRING } },
+    dosage: { type: Type.STRING },
+    price: { type: Type.NUMBER },
+    description: { type: Type.STRING }
   },
-  required: ["summary", "category", "findings", "recommendations"]
+  required: ["name", "type", "uses", "dosage", "price", "description"]
 };
 
-export const generateMonthlyPlan = async (reports: HealthReport[], logs: DailyLog[], user: UserProfile): Promise<MonthlyPlan> => {
+const MedicineListSchema = {
+  type: Type.ARRAY,
+  items: MedicineSchema
+};
+
+export const extractMetricsFromReport = async (text: string) => {
   return handleApiCall(async () => {
     const ai = getAI();
-    const prompt = `Dr. Rishu, synthesize a 30-day medical roadmap for: ${user.name}. Latest BP: ${user.bloodPressure}. Reports: ${JSON.stringify(reports)}. Output JSON.`;
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview', 
-      contents: prompt,
-      config: { 
-        systemInstruction: "You are a clinical strategist. Ensure doList, dontList, and precautions have at least 5 entries each. Every field in the schema MUST be populated with high-quality data.",
+      model: 'gemini-3-flash-preview',
+      contents: `Extract health metrics: "${text}"`,
+      config: {
         responseMimeType: "application/json",
-        responseSchema: MonthlyPlanSchema
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            bloodPressure: { type: Type.STRING },
+            bloodSugar: { type: Type.NUMBER },
+            stressLevel: { type: Type.NUMBER },
+            hemoglobin: { type: Type.NUMBER }
+          }
+        }
       }
     });
     return JSON.parse(response.text || '{}');
   });
 };
 
-export const analyzeWellnessScores = async (scores: any, user: UserProfile) => {
+export const generateFormalDoctorReport = async (analysis: any, user: UserProfile) => {
   return handleApiCall(async () => {
     const ai = getAI();
-    const prompt = `Dr. Rishu, analyze these mental health scores: ${JSON.stringify(scores)}. User Profile: ${JSON.stringify(user)}. Output clinical analysis in JSON.`;
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: `Generate clinical report for ${user.name}. Data: ${JSON.stringify(analysis)}`,
+      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION }
+    });
+    return response.text || "";
+  });
+};
+
+export const getAdvancedDiagnosis = async (params: any) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: prompt,
+      contents: {
+        parts: [
+          params.imageData ? { inlineData: { data: params.imageData, mimeType: params.mimeType } } : null,
+          { text: `Diagnose patient ${params.user.name}. Symptoms: ${params.symptoms}. Mode: ${params.mode}.` }
+        ].filter(Boolean) as any
+      },
       config: { 
-        systemInstruction: "You are a Chief Clinical Psychiatrist. Output strictly structured JSON for neuro-wellness analysis. Ensure 'findings' and 'summary' are detailed and never empty.",
+        systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, 
         responseMimeType: "application/json",
-        responseSchema: WellnessAnalysisSchema
+        responseSchema: DiagnosisSchema
       }
     });
     return JSON.parse(response.text || '{}');
@@ -159,7 +206,7 @@ export const analyzeHealthReport = async (base64: string, mimeType: string) => {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: {
-        parts: [{ inlineData: { data: base64, mimeType } }, { text: "As Dr. Rishu, analyze this report. Output JSON." }]
+        parts: [{ inlineData: { data: base64, mimeType } }, { text: "Analyze this medical document. Output JSON." }]
       },
       config: { 
         systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, 
@@ -171,27 +218,18 @@ export const analyzeHealthReport = async (base64: string, mimeType: string) => {
   });
 };
 
-export const chatWithConsultant = async (history: any[], message: string) => {
+export const generateVoiceResponse = async (text: string) => {
   return handleApiCall(async () => {
     const ai = getAI();
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: [...history, { role: 'user', parts: [{ text: message }] }],
-      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION }
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text: text.substring(0, 500) }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+      },
     });
-    return response.text;
-  });
-};
-
-export const unixChatbotResponse = async (message: string) => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: message,
-      config: { systemInstruction: UNIX_SYSTEM_INSTRUCTION }
-    });
-    return response.text;
+    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   });
 };
 
@@ -214,18 +252,199 @@ export const playAudio = async (base64Data: string) => {
   currentAudioSource = source;
 };
 
-export const generateVoiceResponse = async (text: string) => {
+export const unixChatbotResponse = async (message: string) => {
   return handleApiCall(async () => {
     const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: text.substring(0, 500) }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-      },
+      model: 'gemini-3-flash-preview',
+      contents: message,
+      config: { systemInstruction: "You are MZ-1, technical support for MediZen." }
     });
-    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    return response.text;
+  });
+};
+
+export const chatWithConsultant = async (history: any[], message: string) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: [...history, { role: 'user', parts: [{ text: message }] }],
+      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION }
+    });
+    return response.text;
+  });
+};
+
+export const generateMonthlyPlan = async (reports: HealthReport[], logs: DailyLog[], user: UserProfile): Promise<MonthlyPlan> => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const historyContext = {
+      userMetrics: { age: user.age, bp: user.bloodPressure, sugar: user.bloodSugar, stress: user.stressLevel },
+      recentReports: reports.slice(0, 3).map(r => ({ specialty: r.specialty, summary: r.analysis.summary })),
+      recentLogs: logs.slice(0, 5)
+    };
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview', 
+      contents: `Generate a comprehensive 30-day health protocol based on this clinical history: ${JSON.stringify(historyContext)}. Ensure all fields in the schema are populated with actionable medical-grade advice. Do not return empty lists for doList or dontList.`,
+      config: { 
+        systemInstruction: "You are a Chief Clinical Strategist. Create a detailed 30-day medical roadmap.",
+        responseMimeType: "application/json",
+        responseSchema: MonthlyPlanSchema
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  });
+};
+
+export const analyzeWellnessScores = async (scores: any, user: UserProfile) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Analyze neuro-wellness data for ${user.name}: ${JSON.stringify(scores)}. Follow the provided schema strictly.`,
+      config: { 
+        systemInstruction: "You are a world-class psychiatrist. Analyze psychological indices (PHQ9, GAD7, PTSD) and provide clinical findings.",
+        responseMimeType: "application/json",
+        responseSchema: WellnessSchema
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  });
+};
+
+export const getHealthForecast = async (logs: DailyLog[], user: UserProfile) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Forecast: ${JSON.stringify({ logs, user })}`,
+      config: { 
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            prediction: { type: Type.STRING },
+            actions: { type: Type.ARRAY, items: { type: Type.STRING } },
+            riskLevel: { type: Type.STRING, enum: ["Low", "Moderate", "High"] }
+          },
+          required: ["prediction", "actions", "riskLevel"]
+        }
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  });
+};
+
+// Fix: Add missing findNearbyClinics for DocMate using Gemini 2.5 series with googleMaps tool
+export const findNearbyClinics = async (specialty: string, latitude?: number, longitude?: number) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const contents = `Find top rated ${specialty} clinics or doctors nearby. Provide current and accurate information.`;
+    const config: any = {
+      tools: [{ googleMaps: {} }],
+    };
+    
+    if (latitude !== undefined && longitude !== undefined) {
+      config.toolConfig = {
+        retrievalConfig: {
+          latLng: { latitude, longitude }
+        }
+      };
+    }
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents,
+      config,
+    });
+
+    const locations = (response.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
+      .filter((chunk: any) => chunk.maps)
+      .map((chunk: any) => ({
+        title: chunk.maps.title,
+        uri: chunk.maps.uri
+      }));
+
+    return {
+      locations,
+      text: response.text || "No additional clinical routing details provided."
+    };
+  });
+};
+
+// Fix: Add missing identifyMedicine for Medico to resolve molecule identification queries
+export const identifyMedicine = async (name: string) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Identify this medicine and provide its clinical profile: ${name}`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: MedicineSchema
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  });
+};
+
+// Fix: Add missing suggestMedicines for Medico to provide pharmaceutical suggestions based on symptoms
+export const suggestMedicines = async (query: string) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Suggest appropriate over-the-counter or common medicines for: ${query}. Return a list of objects.`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: MedicineListSchema
+      }
+    });
+    return JSON.parse(response.text || '[]');
+  });
+};
+
+// Fix: Add missing analyzeMedicineImage for Medico multimodal visual identification
+export const analyzeMedicineImage = async (base64: string, mimeType: string) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: {
+        parts: [
+          { inlineData: { data: base64, mimeType } },
+          { text: "Identify the pharmaceutical product in this image and provide clinical data including uses and dosage." }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: MedicineSchema
+      }
+    });
+    return JSON.parse(response.text || '{}');
+  });
+};
+
+// Fix: Add missing extractMedicinesFromReport for Medico script scanning feature
+export const extractMedicinesFromReport = async (base64: string, mimeType: string) => {
+  return handleApiCall(async () => {
+    const ai = getAI();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: {
+        parts: [
+          { inlineData: { data: base64, mimeType } },
+          { text: "Identify all medications mentioned in this clinical report. For each, extract its name, class (type), uses, recommended dosage, and a brief description. Assign a representative market price in INR." }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: MedicineListSchema
+      }
+    });
+    return JSON.parse(response.text || '[]');
   });
 };
 
@@ -252,138 +471,3 @@ export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampl
   }
   return buffer;
 }
-
-export const getHealthForecast = async (logs: DailyLog[], user: UserProfile) => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Dr. Rishu, forecast trends: ${JSON.stringify({ logs, user })}`,
-      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, responseMimeType: "application/json" }
-    });
-    return JSON.parse(response.text || '{}');
-  });
-};
-
-export const generateFormalDoctorReport = async (data: any, user: UserProfile) => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: `Generate a clinical report for: ${user.name}. Data: ${JSON.stringify(data)}. Use professional headers.`,
-      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION }
-    });
-    return response.text;
-  });
-};
-
-export const getAdvancedDiagnosis = async (params: any) => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: {
-        parts: [
-          params.imageData ? { inlineData: { data: params.imageData, mimeType: params.mimeType } } : null,
-          { text: `Diagnose patient ${params.user.name}. Symptoms: ${params.symptoms}. Output JSON.` }
-        ].filter(Boolean) as any
-      },
-      config: { 
-        systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, 
-        responseMimeType: "application/json",
-        responseSchema: DiagnosisSchema
-      }
-    });
-    return JSON.parse(response.text || '{}');
-  });
-};
-
-export const findNearbyClinics = async (specialty: string, lat?: number, lng?: number) => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Find ${specialty} clinics.`,
-      config: {
-        tools: [{ googleMaps: {} }],
-        toolConfig: { retrievalConfig: { latLng: lat && lng ? { latitude: lat, longitude: lng } : undefined } }
-      },
-    });
-    return {
-      text: response.text,
-      locations: response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-        title: chunk.maps?.title || 'Clinic',
-        uri: chunk.maps?.uri
-      })) || []
-    };
-  });
-};
-
-export const extractMetricsFromReport = async (condition: string): Promise<Partial<UserProfile>> => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Extract biomarkers: ${condition}`,
-      config: { 
-        systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, 
-        responseMimeType: "application/json"
-      }
-    });
-    return JSON.parse(response.text || '{}');
-  });
-};
-
-export const identifyMedicine = async (name: string): Promise<Partial<Medicine>> => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Identify pharmacology for: "${name}". Output JSON.`,
-      config: { 
-        systemInstruction: CLINICAL_SYSTEM_INSTRUCTION,
-        responseMimeType: "application/json"
-      }
-    });
-    return JSON.parse(response.text || '{}');
-  });
-};
-
-export const suggestMedicines = async (query: string): Promise<Medicine[]> => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Suggest medicines for: "${query}". Output JSON array.`,
-      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, responseMimeType: "application/json" }
-    });
-    const results = JSON.parse(response.text || '[]');
-    return results.map((m: any) => ({ ...m, id: 'med_' + Math.random().toString(36).substr(2, 9), price: m.price || 299 }));
-  });
-};
-
-export const analyzeMedicineImage = async (base64: string, mimeType: string): Promise<Medicine> => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: { parts: [{ inlineData: { data: base64, mimeType } }, { text: "Identify medicine. Output JSON." }] },
-      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, responseMimeType: "application/json" }
-    });
-    const data = JSON.parse(response.text || '{}');
-    return { ...data, id: 'med_' + Date.now(), price: data.price || 199 };
-  });
-};
-
-export const extractMedicinesFromReport = async (base64: string, mimeType: string): Promise<Medicine[]> => {
-  return handleApiCall(async () => {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: { parts: [{ inlineData: { data: base64, mimeType } }, { text: "Extract medicines from report. Output JSON array." }] },
-      config: { systemInstruction: CLINICAL_SYSTEM_INSTRUCTION, responseMimeType: "application/json" }
-    });
-    const results = JSON.parse(response.text || '[]');
-    return results.map((m: any) => ({ ...m, id: 'med_' + Math.random().toString(36).substr(2, 9), price: m.price || 399 }));
-  });
-};
