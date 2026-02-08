@@ -1,0 +1,9 @@
+{
+  "name": "Copy of MediZen: AI Health Companion",
+  "description": "A comprehensive health management app featuring AI medical consultation, report analysis, mental wellness tracking, and a gamified avatar system.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera",
+    "geolocation"
+  ]
+}
